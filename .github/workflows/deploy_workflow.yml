@@ -3,78 +3,52 @@ name: Deploy to Alibaba Cloud
 on:
   push:
     branches: [main, master]
-  pull_request:
-    branches: [main, master]
 
 jobs:
- 
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '20'
 
-      # 前端构建
       - name: Install frontend dependencies
         working-directory: ./frontend
-        run: npm install
+        run: |
+          npm install
+          chmod +x node_modules/.bin/*
 
       - name: Build frontend
         working-directory: ./frontend
         run: npm run build
 
-      # 后端只安装依赖，不执行 build
       - name: Install backend dependencies
         working-directory: ./backend
         run: npm install
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-
-    steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-output
+      - name: Build backend
+        working-directory: ./backend
+        run: npm run build
 
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
 
-      - name: Deploy to server
+      - name: Deploy frontend
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "
             sudo mkdir -p ${{ secrets.DEPLOY_PATH }}/frontend
-            sudo mkdir -p ${{ secrets.DEPLOY_PATH }}/backend
             sudo chown -R ${{ secrets.SERVER_USER }}:www-data ${{ secrets.DEPLOY_PATH }}
           "
-
           rsync -avz --delete -e "ssh -o StrictHostKeyChecking=no" \
             frontend/dist/ \
             ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.DEPLOY_PATH }}/frontend/
 
-          rsync -avz --delete -e "ssh -o StrictHostKeyChecking=no" \
-            backend/dist/ \
-            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.DEPLOY_PATH }}/backend/
-
-      - name: Restart services
+      - name: Reload Nginx
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "
             sudo nginx -t && sudo nginx -s reload
-            cd ${{ secrets.DEPLOY_PATH }}/backend
-            pm2 restart ecosystem.config.js --update-env || pm2 start ecosystem.config.js
           "
-
-      - name: Health check
-        run: |
-          sleep 5
-          curl -f http://${{ secrets.SERVER_HOST }} || exit 1
-          echo "Deployment successful!"
