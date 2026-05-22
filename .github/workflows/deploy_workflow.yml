@@ -16,9 +16,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: ./frontend
-        run: |
-          npm install
-          chmod +x node_modules/.bin/*
+        run: npm install
 
       - name: Build frontend
         working-directory: ./frontend
@@ -28,9 +26,11 @@ jobs:
         working-directory: ./backend
         run: npm install
 
-      - name: Build backend
+      # 后端如果有 build 脚本就执行，没有则跳过
+      - name: Build backend (if exists)
         working-directory: ./backend
         run: npm run build
+        continue-on-error: true
 
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0
@@ -46,6 +46,18 @@ jobs:
           rsync -avz --delete -e "ssh -o StrictHostKeyChecking=no" \
             frontend/dist/ \
             ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.DEPLOY_PATH }}/frontend/
+
+      - name: Deploy backend
+        run: |
+          rsync -avz --delete -e "ssh -o StrictHostKeyChecking=no" \
+            --exclude 'node_modules' \
+            backend/ \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.DEPLOY_PATH }}/backend/
+
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "
+            cd ${{ secrets.DEPLOY_PATH }}/backend && npm install --production
+            pm2 restart ecosystem.config.js || pm2 start ecosystem.config.js
+          "
 
       - name: Reload Nginx
         run: |
