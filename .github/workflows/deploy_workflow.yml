@@ -1,0 +1,123 @@
+name: Deploy to Alibaba Cloud
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # 构建阶段
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: |
+          cd frontend && npm ci
+          cd ../backend && npm ci
+          
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+          
+      - name: Build backend
+        run: |
+          cd backend
+          npm run build
+          
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: |
+            frontend/dist/
+            backend/dist/
+          retention-days: 1
+
+  # 部署阶段
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
+          
+      - name: Deploy to server
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          # 创建部署目录结构
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "
+            sudo mkdir -p ${{ secrets.DEPLOY_PATH }}/frontend
+            sudo mkdir -p ${{ secrets.DEPLOY_PATH }}/backend
+            sudo chown -R ${{ secrets.SERVER_USER }}:www-data ${{ secrets.DEPLOY_PATH }}
+          "
+          
+          # 同步前端文件
+          rsync -avz --delete -e "ssh -o StrictHostKeyChecking=no" \
+            frontend/dist/ \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.DEPLOY_PATH }}/frontend/
+            
+          # 同步后端文件
+          rsync -avz --delete -e "ssh -o StrictHostKeyChecking=no" \
+            backend/dist/ \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.DEPLOY_PATH }}/backend/
+            
+          # 同步配置文件
+          rsync -avz -e "ssh -o StrictHostKeyChecking=no" \
+            docs/nginx.conf \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.DEPLOY_PATH }}/nginx.conf
+          
+          rsync -avz -e "ssh -o StrictHostKeyChecking=no" \
+            backend/ecosystem.config.js \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.DEPLOY_PATH }}/backend/
+          
+      - name: Restart services
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "
+            # 检查 Nginx 配置
+            sudo nginx -t
+            
+            # 重载 Nginx
+            sudo nginx -s reload
+            
+            # 重启后端服务（使用 PM2）
+            cd ${{ secrets.DEPLOY_PATH }}/backend
+            if command -v pm2 &> /dev/null; then
+              pm2 restart ecosystem.config.js --update-env
+            else
+              npm start &
+            fi
+          "
+          
+      - name: Health check
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          sleep 5
+          curl -f http://${{ secrets.SERVER_HOST }} || exit 1
+          echo "Deployment successful!"
