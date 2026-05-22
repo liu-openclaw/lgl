@@ -14,13 +14,12 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install frontend dependencies
+      - name: Install & Build frontend
         working-directory: ./frontend
-        run: npm install
-
-      - name: Build frontend
-        working-directory: ./frontend
-        run: npx vite build
+        run: |
+          npm install
+          find node_modules/.bin -type f -exec chmod +x {} \;
+          npm run build
 
       - name: Install backend dependencies
         working-directory: ./backend
